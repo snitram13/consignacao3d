@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: consignacoes3d
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: APP_PASSWORD
+        sync: false   # você define a sua palavra-passe no painel do Render
