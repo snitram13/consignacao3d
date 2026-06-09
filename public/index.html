@@ -613,6 +613,9 @@ function renderClientDetail(i){
     '<button class="btn btn-secondary" onclick="editComm('+i+')">✏️ Comissão deste cliente: '+commPct(rate)+'%</button>'+'<button class="btn btn-primary" onclick="openAcerto('+i+')">🤝 Registar visita / acerto</button>'+
     '<button class="btn btn-secondary" onclick="enviarEmail('+i+',null)">📧 Enviar ficha por email</button>'+
     '<button class="btn btn-danger" onclick="deleteClient('+i+')">🗑️ Eliminar cliente</button>';
+
+  // prepara já o PDF do recibo mais recente para a partilha abrir sem demora
+  if(c.history&&c.history.length) prepararPDF(i,c.history.length-1);
 }
 
 function editComm(i){
@@ -853,6 +856,7 @@ function openRecibo(i,hIdx){
   const h=c.history[hIdx];
   if(!h){alert('Recibo não encontrado.');return;}
   reciboRef={i,hIdx};
+  prepararPDF(i,hIdx);
   document.getElementById('recibo-htitle').textContent=h.type==='acerto'?'Recibo de acerto':'Recibo de entrega';
   document.getElementById('recibo-body').innerHTML=
     buildVia(c,h,'Via do Cliente','via--cliente')+
@@ -966,32 +970,51 @@ async function enviarEmail(i,acerto,hIdx){
   const mailto='mailto:'+tos+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body)+cc;
 
   // escolhe o recibo a anexar: o acerto enviado, o recibo aberto, ou o mais recente
-  let h=acerto||null;
-  if(!h&&hIdx!=null&&c.history) h=c.history[hIdx];
-  if(!h&&c.history&&c.history.length) h=c.history[c.history.length-1];
+  let recIdx=hIdx!=null?hIdx:-1;
+  if(recIdx<0&&acerto&&c.history) recIdx=c.history.indexOf(acerto);
+  if(recIdx<0&&c.history&&c.history.length) recIdx=c.history.length-1;
 
   let pdf=null;
-  if(h){
-    try{ pdf=await gerarReciboPDF(c,h); }
+  if(recIdx>=0){
+    try{ pdf=await prepararPDF(i,recIdx); }
     catch(e){ console.warn('Não foi possível gerar o PDF do recibo:',e); }
   }
 
-  // telemóvel: folha de partilha do sistema → Mail com PDF anexado e texto no corpo
+  // partilha nativa (telemóvel e Mac): abre o email com o PDF anexado e o texto no corpo
   if(pdf&&navigator.canShare&&navigator.canShare({files:[pdf]})){
     try{ await navigator.share({files:[pdf],title:subject,text:body}); return; }
     catch(e){ if(e.name==='AbortError') return; }
   }
 
-  // computador: descarrega o PDF para o utilizador anexar ao email que vai abrir
+  // último recurso (browsers sem partilha de ficheiros): descarrega o PDF e abre o email
   if(pdf){
     const url=URL.createObjectURL(pdf);
     const a=document.createElement('a');
     a.href=url;a.download=pdf.name;
     document.body.appendChild(a);a.click();a.remove();
     setTimeout(()=>URL.revokeObjectURL(url),10000);
-    alert('O recibo em PDF foi descarregado ('+pdf.name+').\nAnexe-o ao email que vai abrir de seguida.');
+    alert('Este browser não permite anexar diretamente.\nO recibo em PDF foi descarregado ('+pdf.name+') — anexe-o ao email que vai abrir.');
   }
   window.location.href=mailto;
+}
+
+/* pré-gera e guarda o PDF do recibo: assim a partilha abre logo
+   (o Safari recusa a partilha se houver demora após o toque no botão) */
+const pdfCache=new Map();
+function prepararPDF(i,hIdx){
+  const c=clients[i];
+  const h=c&&c.history?c.history[hIdx]:null;
+  if(!h) return Promise.resolve(null);
+  const key=h.recId||(c.name+'#'+hIdx);
+  if(!pdfCache.has(key)){
+    if(pdfCache.size>5) pdfCache.delete(pdfCache.keys().next().value);
+    pdfCache.set(key,gerarReciboPDF(c,h).catch(e=>{
+      pdfCache.delete(key);
+      console.warn('Não foi possível gerar o PDF do recibo:',e);
+      return null;
+    }));
+  }
+  return pdfCache.get(key);
 }
 
 /* carrega a biblioteca de PDF só quando é precisa */
