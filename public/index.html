@@ -871,7 +871,7 @@ function emailRecibo(){
   if(!reciboRef)return;
   const c=clients[reciboRef.i];
   const h=c.history[reciboRef.hIdx];
-  enviarEmail(reciboRef.i, h.type==='acerto'?h:null);
+  enviarEmail(reciboRef.i, h.type==='acerto'?h:null, reciboRef.hIdx);
 }
 
 function buildVia(c,h,copyLabel,cls){
@@ -944,7 +944,7 @@ function buildVia(c,h,copyLabel,cls){
 }
 
 
-function enviarEmail(i,acerto){
+async function enviarEmail(i,acerto,hIdx){
   const c=clients[i];
   const rate=commRate(c);
   const d=acerto?acerto.date:c.lastDate;
@@ -963,7 +963,70 @@ function enviarEmail(i,acerto){
   const subject='Consignação '+c.name+' — '+fmtDate(d);
   const tos=c.email?encodeURIComponent(c.email):'';
   const cc=me.email?'&cc='+encodeURIComponent(me.email):'';
-  window.location.href='mailto:'+tos+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body)+cc;
+  const mailto='mailto:'+tos+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body)+cc;
+
+  // escolhe o recibo a anexar: o acerto enviado, o recibo aberto, ou o mais recente
+  let h=acerto||null;
+  if(!h&&hIdx!=null&&c.history) h=c.history[hIdx];
+  if(!h&&c.history&&c.history.length) h=c.history[c.history.length-1];
+
+  let pdf=null;
+  if(h){
+    try{ pdf=await gerarReciboPDF(c,h); }
+    catch(e){ console.warn('Não foi possível gerar o PDF do recibo:',e); }
+  }
+
+  // telemóvel: folha de partilha do sistema → Mail com PDF anexado e texto no corpo
+  if(pdf&&navigator.canShare&&navigator.canShare({files:[pdf]})){
+    try{ await navigator.share({files:[pdf],title:subject,text:body}); return; }
+    catch(e){ if(e.name==='AbortError') return; }
+  }
+
+  // computador: descarrega o PDF para o utilizador anexar ao email que vai abrir
+  if(pdf){
+    const url=URL.createObjectURL(pdf);
+    const a=document.createElement('a');
+    a.href=url;a.download=pdf.name;
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),10000);
+    alert('O recibo em PDF foi descarregado ('+pdf.name+').\nAnexe-o ao email que vai abrir de seguida.');
+  }
+  window.location.href=mailto;
+}
+
+/* carrega a biblioteca de PDF só quando é precisa */
+let html2pdfLoading=null;
+function loadHtml2pdf(){
+  if(window.html2pdf) return Promise.resolve();
+  if(html2pdfLoading) return html2pdfLoading;
+  html2pdfLoading=new Promise((res,rej)=>{
+    const s=document.createElement('script');
+    s.src='https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.2/html2pdf.bundle.min.js';
+    s.onload=res;
+    s.onerror=()=>{html2pdfLoading=null;rej(new Error('sem ligação à internet ou CDN indisponível'));};
+    document.head.appendChild(s);
+  });
+  return html2pdfLoading;
+}
+
+async function gerarReciboPDF(c,h){
+  await loadHtml2pdf();
+  const wrap=document.createElement('div');
+  wrap.style.cssText='position:fixed;left:-10000px;top:0;width:640px;background:#fff;padding:10px';
+  wrap.innerHTML=buildVia(c,h,'Via do Cliente','via--cliente');
+  document.body.appendChild(wrap);
+  const nome='Recibo_'+String(h.recId||c.name||'consignacao').replace(/[^\w\-]+/g,'_')+'_'+fmtDate(h.date).replace(/[^\d]+/g,'-')+'.pdf';
+  try{
+    const blob=await html2pdf().set({
+      margin:8,
+      image:{type:'jpeg',quality:0.95},
+      html2canvas:{scale:2,backgroundColor:'#ffffff',useCORS:true},
+      jsPDF:{unit:'mm',format:'a4',orientation:'portrait'}
+    }).from(wrap).outputPdf('blob');
+    return new File([blob],nome,{type:'application/pdf'});
+  }finally{
+    wrap.remove();
+  }
 }
 
 function deleteClient(i){
